@@ -144,7 +144,7 @@ class MusicControls(View):
         super().__init__(timeout=None)
         self.player = player
 
-    @discord.ui.button(label="⏯️ Pausar/Reanudar", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.primary, emoji="⏸️")
     async def pause_resume(self, interaction: discord.Interaction, button: Button):
         voice = self.player.voice
 
@@ -157,11 +157,17 @@ class MusicControls(View):
 
         if voice.is_playing():
             voice.pause()
-            await interaction.response.send_message("⏸️ Música pausada.", ephemeral=True)
+            button.label = "▶️"
+            button.emoji = "▶️"
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("⏸️ Música pausada.", ephemeral=True)
 
         elif voice.is_paused():
             voice.resume()
-            await interaction.response.send_message("▶️ Música reanudada.", ephemeral=True)
+            button.label = "⏸️"
+            button.emoji = "⏸️"
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("▶️ Música reanudada.", ephemeral=True)
 
         else:
             await interaction.response.send_message(
@@ -169,7 +175,7 @@ class MusicControls(View):
                 ephemeral=True
             )
 
-    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, emoji="⏭️")
     async def skip(self, interaction: discord.Interaction, button: Button):
         voice = self.player.voice
 
@@ -183,7 +189,7 @@ class MusicControls(View):
         voice.stop()
         await interaction.response.send_message("⏭️ Canción saltada.", ephemeral=True)
 
-    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="⏹️", style=discord.ButtonStyle.danger, emoji="⏹️")
     async def stop(self, interaction: discord.Interaction, button: Button):
         voice = self.player.voice
 
@@ -193,10 +199,39 @@ class MusicControls(View):
         if voice and voice.is_connected():
             voice.stop()
 
-        await interaction.response.send_message(
-            "⏹️ Reproducción detenida y cola limpiada.",
-            ephemeral=True
+        await interaction.response.edit_message(content="⏹️ Reproducción detenida y cola limpiada.", view=None)
+        await interaction.followup.send("⏹️ Reproducción detenida y cola limpiada.", ephemeral=True)
+
+    @discord.ui.button(label="🔁", style=discord.ButtonStyle.secondary, emoji="🔁")
+    async def loop(self, interaction: discord.Interaction, button: Button):
+        # Implementar función de loop (repetir canción actual)
+        if self.player.current:
+            self.player.queue.insert(0, self.player.current)
+            await interaction.response.send_message("🔁 Canción actual añadida al inicio de la cola (loop).", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ No hay canción para repetir.", ephemeral=True)
+
+    @discord.ui.button(label="📜", style=discord.ButtonStyle.secondary, emoji="📜")
+    async def queue(self, interaction: discord.Interaction, button: Button):
+        # Mostrar cola actual
+        queue_list = []
+        if self.player.current:
+            queue_list.append(f"▶️ {self.player.current.title}")
+        
+        for i, track in enumerate(self.player.queue[:10], start=1):
+            queue_list.append(f"{i}. {track.title}")
+        
+        if not queue_list:
+            await interaction.response.send_message("📜 La cola está vacía.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="📜 Cola de reproducción",
+            description="\n".join(queue_list),
+            color=discord.Color.blue()
         )
+        embed.set_footer(text=f"Total: {len(self.player.queue) + (1 if self.player.current else 0)} canciones")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ============================================================
@@ -304,15 +339,30 @@ async def play(interaction: discord.Interaction, query: str):
     if not was_playing and player.current is None:
         await player.play_next()
 
+        # Embed mejorado estilo YouTube Music
         embed = discord.Embed(
             title="🎵 Reproduciendo ahora",
             description=f"**[{track.title}]({track.webpage_url})**",
+            color=discord.Color.red()
+        )
+        embed.set_author(name="YouTube Music", icon_url="https://www.youtube.com/favicon.ico")
+        embed.add_field(
+            name="🎵 Canción",
+            value=f"[{track.title}]({track.webpage_url})",
+            inline=False
         )
         embed.add_field(
-            name="Duración",
-            value=format_duration(track.duration)
+            name="⏱️ Duración",
+            value=format_duration(track.duration),
+            inline=True
         )
-        embed.set_footer(text=f"Solicitado por {interaction.user.display_name}")
+        embed.add_field(
+            name="👤 Solicitado por",
+            value=interaction.user.display_name,
+            inline=True
+        )
+        embed.set_footer(text=f"Reproduciendo en {channel.name} • Total en cola: {len(player.queue) + 1}")
+        embed.set_thumbnail(url="https://img.youtube.com/vi/default/maxresdefault.jpg")
 
         await interaction.followup.send(
             embed=embed,
@@ -321,10 +371,31 @@ async def play(interaction: discord.Interaction, query: str):
     else:
         position = len(player.queue)
 
-        await interaction.followup.send(
-            f"🎶 **Añadida a la cola:** [{track.title}]({track.webpage_url})\n"
-            f"📋 Posición: **{position}**"
+        # Embed mejorado para añadir a cola
+        embed = discord.Embed(
+            title="🎶 Añadido a la cola",
+            description=f"**[{track.title}]({track.webpage_url})**",
+            color=discord.Color.blue()
         )
+        embed.set_author(name="YouTube Music", icon_url="https://www.youtube.com/favicon.ico")
+        embed.add_field(
+            name="📋 Posición en cola",
+            value=f"#{position}",
+            inline=True
+        )
+        embed.add_field(
+            name="⏱️ Duración",
+            value=format_duration(track.duration),
+            inline=True
+        )
+        embed.add_field(
+            name="👤 Solicitado por",
+            value=interaction.user.display_name,
+            inline=True
+        )
+        embed.set_footer(text=f"Total en cola: {len(player.queue)}")
+
+        await interaction.followup.send(embed=embed)
 
 
 # ============================================================
