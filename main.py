@@ -21,16 +21,13 @@ FFMPEG_OPTIONS = {
     "options": "-vn",
 }
 
-# Presets de equalizador
+# Presets de equalizador (simplificados para compatibilidad)
 EQUALIZER_PRESETS = {
     "flat": "",  # Sin ecualización
-    "rock": "equalizer=f=100:0.1:1:0.5:0.2:2",
-    "pop": "equalizer=f=100:0.2:0.2:0.3:0.2:2",
-    "classical": "equalizer=f=100:0.1:0.1:0.1:0.1:2",
-    "bass": "bass=g=10",
-    "treble": "treble=g=5",
-    "vocal": "equalizer=f=100:0.2:0.3:0.2:0.1:2",
-    "boost": "equalizer=f=100:0.2:0.2:0.2:0.2:2,bass=g=8,treble=g=5"
+    "bass": "-af \"bass=g=5\"",  # Bajos más fuertes
+    "treble": "-af \"treble=g=3\"",  # Agudos más fuertes
+    "boost": "-af \"bass=g=3,treble=g=2\"",  # Mejora general
+    "vocal": "-af \"superequalizer\"",  # Ecualizador simple
 }
 
 YTDLP_OPTIONS = {
@@ -107,6 +104,7 @@ class GuildMusic:
             ffmpeg_opts = FFMPEG_OPTIONS.copy()
             if eq_filter:
                 ffmpeg_opts["options"] += f" {eq_filter}"
+                print(f"[Guild {self.guild_id}] Aplicando equalizer: {self.equalizer} -> {eq_filter}")
 
             source = discord.FFmpegPCMAudio(track.stream_url, **ffmpeg_opts)
             source = discord.PCMVolumeTransformer(source, volume=self.volume)
@@ -323,7 +321,7 @@ class MusicControls(View):
 
     @discord.ui.button(emoji="🎚️", style=discord.ButtonStyle.secondary, custom_id="music:equalizer")
     async def equalizer(self, interaction: discord.Interaction, button: Button):
-        presets = ["flat", "rock", "pop", "classical", "bass", "treble", "vocal", "boost"]
+        presets = ["flat", "bass", "treble", "boost", "vocal"]
         current = self.player.equalizer
         
         embed = discord.Embed(
@@ -334,7 +332,7 @@ class MusicControls(View):
         
         for i, preset in enumerate(presets):
             status = "✅" if preset == current else "⬜"
-            embed.add_field(name=f"{status} {preset}", value=EQUALIZER_PRESETS[preset] or "Sin filtros", inline=True)
+            embed.add_field(name=f"{status} {preset}", value="Activo" if preset == current else "Inactivo", inline=True)
         
         embed.set_footer(text="Usa /equalizer [preset] para cambiar directamente")
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -474,7 +472,7 @@ async def leave(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="equalizer", description="Cambia el preset de equalizador.")
-@app_commands.describe(preset="Preset de equalizador (flat, rock, pop, classical, bass, treble, vocal, boost)")
+@app_commands.describe(preset="Preset de equalizador (flat, bass, treble, boost, vocal)")
 async def equalizer(interaction: discord.Interaction, preset: str):
     player = get_player(interaction.guild.id)
     
