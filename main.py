@@ -156,9 +156,6 @@ class GuildMusic:
             def after(error):
                 if error:
                     print(f"[Guild {self.guild_id}] Error de reproducción: {error}")
-                if getattr(self, "suppress_after", False):
-                    self.suppress_after = False
-                    return
                 asyncio.run_coroutine_threadsafe(self.play_next(), bot.loop)
 
             self.voice.play(source, after=after)
@@ -521,50 +518,80 @@ class MusicControls(View):
 @bot.tree.command(name="play", description="Reproduce una canción por nombre o enlace.")
 @app_commands.describe(query="Nombre de la canción o enlace")
 async def play(interaction: discord.Interaction, query: str):
-    if not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Usa este comando en un servidor.", ephemeral=True)
         return
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("🎧 Entra primero a un canal de voz.", ephemeral=True)
+    if not isinstance(interaction.user, discord.Member) or not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("🎧 Primero entra a un canal de voz.", ephemeral=True)
         return
 
     await interaction.response.defer()
-
     player = get_player(interaction.guild.id)
-
-    if player.voice and player.voice.is_connected():
-        if player.voice.channel != interaction.user.voice.channel:
-            await player.voice.move_to(interaction.user.voice.channel)
-    else:
-        player.voice = await interaction.user.voice.channel.connect()
+    channel = interaction.user.voice.channel
 
     try:
+        if player.voice and player.voice.is_connected():
+            if player.voice.channel != channel:
+                await player.voice.move_to(channel)
+        else:
+            player.voice = await channel.connect()
+
         track = await extract_track(query)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error buscando la canción: {e}", ephemeral=True)
+    except Exception as error:
+        print(f"Error buscando canción: {error}")
+        await interaction.followup.send("❌ No pude encontrar/reproducir esa canción. Comprueba el nombre o enlace.")
         return
 
+    was_playing = player.voice.is_playing() or player.voice.is_paused()
     player.queue.append(track)
 
-    if not player.voice.is_playing():
+    if not was_playing and player.current is None:
         await player.play_next()
-        await interaction.followup.send(f"▶️ **{track.title}** - {track.uploader}")
+        msg = await interaction.followup.send(
+            embed=make_now_playing_embed(player),
+            view=MusicControls(player),
+            wait=True,
+        )
+        player.panel_message = msg
     else:
-        await interaction.followup.send(f"📝 **{track.title}** añadida a la cola ({len(player.queue)} en cola)")
+        await interaction.followup.send(
+            f"🎶 Añadida a la cola: **{track.title}** • posición **{len(player.queue)}**"
+        )
 
 
 # ============================================================
-# COMANDOS BÁSICOS
+# COMANDOS RESTANTES
 # ============================================================
+@bot.tree.command(name="pause", description="Pausa la música.")
+async def pause(interaction: discord.Interaction):
+    player = get_player(interaction.guild.id)
+    if player.voice and player.voice.is_playing():
+        player.voice.pause()
+        await interaction.response.send_message("⏸️ Pausado.")
+        await update_panel(player)
+    else:
+        await interaction.response.send_message("❌ No hay música reproduciéndose.", ephemeral=True)
+
+
+@bot.tree.command(name="resume", description="Reanuda la música.")
+async def resume(interaction: discord.Interaction):
+    player = get_player(interaction.guild.id)
+    if player.voice and player.voice.is_paused():
+        player.voice.resume()
+        await interaction.response.send_message("▶️ Reanudado.")
+        await update_panel(player)
+    else:
+        await interaction.response.send_message("❌ La música no está pausada.", ephemeral=True)
+
+
 @bot.tree.command(name="skip", description="Salta la canción actual.")
 async def skip(interaction: discord.Interaction):
     player = get_player(interaction.guild.id)
-    if not player.voice or not player.voice.is_playing():
+    if player.voice and player.voice.is_playing():
+        player.voice.stop()
+        await interaction.response.send_message("⏭️ Canción saltada.")
+    else:
         await interaction.response.send_message("❌ No hay música reproduciéndose.", ephemeral=True)
-        return
-    player.voice.stop()
-    await interaction.response.send_message("⏭️ Canción saltada.")
 
 
 @bot.tree.command(name="stop", description="Detiene la música y limpia la cola.")
@@ -595,6 +622,21 @@ async def nowplaying(interaction: discord.Interaction):
     await interaction.response.send_message(embed=make_now_playing_embed(player), view=MusicControls(player))
 
 
+@bot.tree.command(name="equalizer", description="Abre el ecualizador profesional de 10 bandas.")
+async def equalizer(interaction: discord.Interaction):
+    player = get_player(interaction.guild.id)
+    preset = EQ_NAMES.get(player.eq_preset, "Personalizado")
+    embed = discord.Embed(
+        title="🎚️ Ecualizador Profesional",
+        description=(
+            f"**Estado:** `{'ON' if player.eq_enabled else 'OFF'}` • **Perfil:** `{preset}`\n\n"
+            f"{eq_summary(player.eq_gains)}\n\n"
+            "Usa el menú para cambiar de preset o ajusta las **10 bandas** en dos grupos de 5, de **-12 a +12 dB** por banda."
+        ),
+    )
+    await interaction.response.send_message(embed=embed, view=EqualizerView(player), ephemeral=True)
+
+
 @bot.tree.command(name="volume", description="Cambia el volumen (0-100).")
 @app_commands.describe(level="Volumen entre 0 y 100")
 async def volume(interaction: discord.Interaction, level: app_commands.Range[int, 0, 100]):
@@ -618,53 +660,44 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en un canal de voz.", ephemeral=True)
 
 
-@bot.tree.command(name="musichelp", description="Muestra todos los comandos disponibles.")
-async def musichelp(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🎵 Comandos del Bot de Música",
-        description="Comandos slash disponibles:",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="/play [canción]", value="Reproduce una canción", inline=False)
-    embed.add_field(name="/skip", value="Salta la canción actual", inline=False)
-    embed.add_field(name="/stop", value="Detiene y limpia la cola", inline=False)
-    embed.add_field(name="/queue", value="Muestra la cola", inline=False)
-    embed.add_field(name="/nowplaying", value="Canción actual con panel", inline=False)
-    embed.add_field(name="/volume [0-100]", value="Cambia el volumen", inline=False)
-    embed.add_field(name="/leave", value="Desconecta del canal", inline=False)
-    embed.add_field(name="/musichelp", value="Muestra esta ayuda", inline=False)
-    embed.set_footer(text="Usa el botón 🎛️ en el panel para el ecualizador profesional")
-    await interaction.response.send_message(embed=embed)
-
-
 # ============================================================
 # EVENTOS / ACTUALIZACIÓN
 # ============================================================
 @bot.event
 async def on_ready():
+    print("==========================================")
     print(f"✅ Bot conectado: {bot.user}")
     print(f"🌐 Servidores: {len(bot.guilds)}")
     print("==========================================")
     try:
         synced = await bot.tree.sync()
         print(f"✅ Slash commands sincronizados: {len(synced)}")
-    except Exception as e:
-        print(f"❌ Error sincronizando comandos: {e}")
+    except Exception as error:
+        print(f"❌ Error sincronizando comandos: {error}")
+    if not panel_updater.is_running():
+        panel_updater.start()
+
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-    if before.channel and not after.channel:
-        player = get_player(before.channel.guild.id)
-        if player.voice and player.voice.channel == before.channel:
-            if len(player.voice.channel.members) == 1:
-                player.queue.clear()
-                player.current = None
-                if player.voice and player.voice.is_connected():
-                    await player.voice.disconnect()
-                    player.voice = None
+    if bot.user and member.id == bot.user.id and before.channel and not after.channel:
+        player = music_players.get(member.guild.id)
+        if player:
+            player.voice = None
+            player.current = None
+            player.panel_message = None
 
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
+@tasks.loop(seconds=15)
+async def panel_updater():
+    for player in list(music_players.values()):
+        if player.current and player.panel_message:
+            await update_panel(player)
+
+
+@panel_updater.before_loop
+async def before_panel_updater():
+    await bot.wait_until_ready()
+
+
+bot.run(TOKEN)
