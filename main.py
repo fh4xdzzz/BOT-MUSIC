@@ -24,10 +24,10 @@ FFMPEG_OPTIONS = {
 # Presets de equalizador (simplificados para compatibilidad)
 EQUALIZER_PRESETS = {
     "flat": "",  # Sin ecualización
-    "bass": "-af \"bass=g=5\"",  # Bajos más fuertes
-    "treble": "-af \"treble=g=3\"",  # Agudos más fuertes
-    "boost": "-af \"bass=g=3,treble=g=2\"",  # Mejora general
-    "vocal": "-af \"superequalizer\"",  # Ecualizador simple
+    "bass": "-af bass=g=5",  # Bajos más fuertes
+    "treble": "-af treble=g=3",  # Agudos más fuertes
+    "boost": "-af bass=g=3,treble=g=2",  # Mejora general
+    "vocal": "-af "  # Sin filtros para vocal (evitar problemas)
 }
 
 YTDLP_OPTIONS = {
