@@ -7,7 +7,7 @@ import discord
 import yt_dlp
 from discord.ext import commands, tasks
 from discord import app_commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput, Select
 
 # ============================================================
 # CONFIGURACIÓN
@@ -19,15 +19,6 @@ if not TOKEN:
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
-}
-
-# Presets de equalizador (simplificados para compatibilidad)
-EQUALIZER_PRESETS = {
-    "flat": "",  # Sin ecualización
-    "bass": "-af bass=g=5",  # Bajos más fuertes
-    "treble": "-af treble=g=3",  # Agudos más fuertes
-    "boost": "-af bass=g=3,treble=g=2",  # Mejora general
-    "vocal": "-af "  # Sin filtros para vocal (evitar problemas)
 }
 
 YTDLP_OPTIONS = {
@@ -50,6 +41,59 @@ music_players = {}
 # ============================================================
 # MODELOS
 # ============================================================
+EQ_BANDS = [
+    (31, "31 Hz"),
+    (62, "62 Hz"),
+    (125, "125 Hz"),
+    (250, "250 Hz"),
+    (500, "500 Hz"),
+    (1000, "1 kHz"),
+    (2000, "2 kHz"),
+    (4000, "4 kHz"),
+    (8000, "8 kHz"),
+    (16000, "16 kHz"),
+]
+
+EQ_PRESETS = {
+    "flat": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "bass": [6, 5, 4, 2, 0, 0, -1, -1, -1, -1],
+    "rock": [4, 3, 1, -1, -2, 1, 3, 4, 4, 3],
+    "pop": [-1, 1, 3, 4, 2, -1, -1, 1, 3, 2],
+    "vocal": [-3, -2, -1, 2, 4, 5, 4, 2, 0, -1],
+    "electronic": [5, 4, 2, 0, -1, 1, 3, 4, 5, 4],
+    "night": [-2, -1, 0, 1, 2, 3, 2, 1, 0, -1],
+    "custom_bass": [12, 8, 4, -2, 0, 0, 0, 4, 2, 0],  # Configuración personalizada de bajos
+}
+
+EQ_NAMES = {
+    "flat": "Flat",
+    "bass": "Bass Boost",
+    "rock": "Rock",
+    "pop": "Pop",
+    "vocal": "Vocal",
+    "electronic": "Electronic",
+    "night": "Night Mode",
+    "custom_bass": "Custom Bass",
+}
+
+def clamp_gain(value):
+    return max(-12.0, min(12.0, float(value)))
+
+def eq_filter(gains):
+    parts = []
+    for (freq, _), gain in zip(EQ_BANDS, gains):
+        gain = clamp_gain(gain)
+        if abs(gain) >= 0.01:
+            parts.append(f"equalizer=f={freq}:t=q:w=1:g={gain:.2f}")
+    return ",".join(parts) if parts else "anull"
+
+def eq_summary(gains):
+    chunks = []
+    for (_, label), gain in zip(EQ_BANDS, gains):
+        if abs(gain) >= 0.01:
+            chunks.append(f"{label}: {'+' if gain > 0 else ''}{gain:.1f} dB")
+    return " • ".join(chunks) if chunks else "Flat (sin realce)"
+
 class Track:
     def __init__(self, title, stream_url, webpage_url, duration=0, thumbnail=None, uploader=None):
         self.title = title
@@ -67,11 +111,14 @@ class GuildMusic:
         self.current = None
         self.voice = None
         self.volume = 0.5
+        self.eq_enabled = True
+        self.eq_gains = EQ_PRESETS["flat"].copy()
+        self.eq_preset = "flat"
         self.loop = False
         self.panel_message = None
         self.started_at = None
-        self.equalizer = "flat"  # Equalizer activo
         self.lock = asyncio.Lock()
+        self.suppress_after = False
 
     def elapsed(self):
         if not self.started_at or not self.current:
@@ -99,19 +146,19 @@ class GuildMusic:
             self.started_at = datetime.now(timezone.utc)
             self.paused_at = None
 
-            # Aplicar equalizador si no es "flat"
-            eq_filter = EQUALIZER_PRESETS.get(self.equalizer, "")
-            ffmpeg_opts = FFMPEG_OPTIONS.copy()
-            if eq_filter:
-                ffmpeg_opts["options"] += f" {eq_filter}"
-                print(f"[Guild {self.guild_id}] Aplicando equalizer: {self.equalizer} -> {eq_filter}")
-
-            source = discord.FFmpegPCMAudio(track.stream_url, **ffmpeg_opts)
+            source = discord.FFmpegPCMAudio(
+                track.stream_url,
+                before_options=FFMPEG_OPTIONS["before_options"],
+                options=f"-vn -af {eq_filter(self.eq_gains) if self.eq_enabled else 'anull'}",
+            )
             source = discord.PCMVolumeTransformer(source, volume=self.volume)
 
             def after(error):
                 if error:
                     print(f"[Guild {self.guild_id}] Error de reproducción: {error}")
+                if getattr(self, "suppress_after", False):
+                    self.suppress_after = False
+                    return
                 asyncio.run_coroutine_threadsafe(self.play_next(), bot.loop)
 
             self.voice.play(source, after=after)
@@ -196,7 +243,9 @@ def make_now_playing_embed(player: GuildMusic):
     if track.thumbnail:
         embed.set_thumbnail(url=track.thumbnail)
 
-    embed.set_footer(text="Groove Music")
+    preset = EQ_NAMES.get(player.eq_preset, "Custom")
+    eq_state = "ON" if player.eq_enabled else "OFF"
+    embed.set_footer(text=f"Groove Music • EQ {eq_state} • {preset}")
     return embed
 
 
@@ -216,6 +265,142 @@ async def update_panel(player: GuildMusic):
 # ============================================================
 # BOTONES
 # ============================================================
+class EqualizerModal(Modal):
+    def __init__(self, player, start_index=0):
+        title = "🎚️ EQ — Bandas 1-5" if start_index == 0 else "🎚️ EQ — Bandas 6-10"
+        super().__init__(title=title, timeout=180)
+        self.player = player
+        self.start_index = start_index
+        self.inputs = []
+
+        for i in range(start_index, min(start_index + 5, len(EQ_BANDS))):
+            freq, label = EQ_BANDS[i]
+            current = player.eq_gains[i]
+            field = TextInput(
+                label=label,
+                placeholder="-12 a +12 dB",
+                default=f"{current:.1f}",
+                required=True,
+                min_length=1,
+                max_length=6,
+            )
+            self.inputs.append((i, field))
+            self.add_item(field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            for i, field in self.inputs:
+                self.player.eq_gains[i] = clamp_gain(float(field.value.replace(",", ".")))
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Usa solo números entre **-12 y +12 dB**.", ephemeral=True
+            )
+            return
+
+        self.player.eq_enabled = True
+        self.player.eq_preset = "custom"
+
+        if self.start_index == 0:
+            await interaction.response.send_message(
+                "🎚️ **Bandas 1-5 guardadas.** Ahora puedes editar las bandas 6-10 desde el panel del ecualizador.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "🎚️ **Ecualizador personalizado guardado.**\n" + eq_summary(self.player.eq_gains),
+                ephemeral=True,
+            )
+
+        await restart_current_with_eq(self.player)
+
+
+class EqualizerSelect(Select):
+    def __init__(self, player):
+        options = [
+            discord.SelectOption(label=name, value=key, description="Aplicar este perfil al audio")
+            for key, name in EQ_NAMES.items()
+        ]
+        options.append(discord.SelectOption(label="Personalizado", value="custom", description="Configura las 10 bandas manualmente"))
+        options.append(discord.SelectOption(label="Bypass / Sin EQ", value="bypass", description="Desactiva el procesamiento del ecualizador"))
+        super().__init__(placeholder="Selecciona un perfil de audio...", options=options, custom_id="music:eq:select")
+        self.player = player
+
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+        if value == "custom":
+            await interaction.response.send_modal(EqualizerModal(self.player))
+            return
+        if value == "bypass":
+            self.player.eq_enabled = False
+            self.player.eq_preset = "flat"
+            await interaction.response.send_message("🎚️ **Ecualizador desactivado.**", ephemeral=True)
+        else:
+            self.player.eq_enabled = True
+            self.player.eq_preset = value
+            self.player.eq_gains = EQ_PRESETS[value].copy()
+            await interaction.response.send_message(
+                f"🎚️ Perfil **{EQ_NAMES[value]}** aplicado.\n{eq_summary(self.player.eq_gains)}",
+                ephemeral=True,
+            )
+        await restart_current_with_eq(self.player)
+
+
+class EqualizerView(View):
+    def __init__(self, player):
+        super().__init__(timeout=180)
+        self.add_item(EqualizerSelect(player))
+        self.player = player
+
+    @discord.ui.button(label="🎚️ Bandas 1-5", style=discord.ButtonStyle.primary, custom_id="music:eq:low")
+    async def low_bands(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(EqualizerModal(self.player, 0))
+
+    @discord.ui.button(label="🎚️ Bandas 6-10", style=discord.ButtonStyle.primary, custom_id="music:eq:high")
+    async def high_bands(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(EqualizerModal(self.player, 5))
+
+    @discord.ui.button(label="⏺️ Activar / Desactivar", style=discord.ButtonStyle.secondary, custom_id="music:eq:toggle")
+    async def toggle(self, interaction: discord.Interaction, button: Button):
+        self.player.eq_enabled = not self.player.eq_enabled
+        state = "activado" if self.player.eq_enabled else "desactivado"
+        await interaction.response.send_message(f"🎚️ Ecualizador **{state}**.", ephemeral=True)
+        await restart_current_with_eq(self.player)
+
+
+async def restart_current_with_eq(player: GuildMusic):
+    """Reinicia el stream actual para aplicar el filtro FFmpeg nuevo."""
+    if not player.current or not player.voice or not player.voice.is_connected():
+        await update_panel(player)
+        return
+
+    current = player.current
+    # Evitamos que el callback del stop salte a la siguiente pista.
+    player.suppress_after = True
+    if player.voice.is_playing() or player.voice.is_paused():
+        player.voice.stop()
+        await asyncio.sleep(0.15)
+
+    player.started_at = datetime.now(timezone.utc)
+    player.paused_at = None
+    source = discord.FFmpegPCMAudio(
+        current.stream_url,
+        before_options=FFMPEG_OPTIONS["before_options"],
+        options=f"-vn -af {eq_filter(player.eq_gains) if player.eq_enabled else 'anull'}",
+    )
+    source = discord.PCMVolumeTransformer(source, volume=player.volume)
+
+    def after(error):
+        if error:
+            print(f"[Guild {player.guild_id}] Error de reproducción: {error}")
+        if getattr(player, "suppress_after", False):
+            player.suppress_after = False
+            return
+        asyncio.run_coroutine_threadsafe(player.play_next(), bot.loop)
+
+    player.voice.play(source, after=after)
+    await update_panel(player)
+
+
 class MusicControls(View):
     def __init__(self, player):
         super().__init__(timeout=None)
@@ -309,6 +494,16 @@ class MusicControls(View):
             ephemeral=True,
         )
 
+    @discord.ui.button(emoji="🎛️", style=discord.ButtonStyle.secondary, custom_id="music:eq")
+    async def equalizer(self, interaction: discord.Interaction, button: Button):
+        preset = EQ_NAMES.get(self.player.eq_preset, "Personalizado")
+        state = "ON" if self.player.eq_enabled else "OFF"
+        embed = discord.Embed(
+            title="🎚️ Ecualizador Profesional",
+            description=f"**Estado:** `{state}` • **Perfil:** `{preset}`\n\n{eq_summary(self.player.eq_gains)}\n\nSelecciona un preset o ajusta las 10 bandas en dos grupos. Los cambios se aplican al reproductor.",
+        )
+        await interaction.response.send_message(embed=embed, view=EqualizerView(self.player), ephemeral=True)
+
     @discord.ui.button(emoji="❤️", style=discord.ButtonStyle.secondary, custom_id="music:favorite")
     async def favorite(self, interaction: discord.Interaction, button: Button):
         if self.player.current:
@@ -319,26 +514,6 @@ class MusicControls(View):
         else:
             await interaction.response.send_message("❌ No hay canción actual.", ephemeral=True)
 
-    @discord.ui.button(emoji="🎚️", style=discord.ButtonStyle.secondary, custom_id="music:equalizer")
-    async def equalizer(self, interaction: discord.Interaction, button: Button):
-        presets = ["flat", "bass", "treble", "boost", "vocal"]
-        current = self.player.equalizer
-        
-        embed = discord.Embed(
-            title="🎚️ Equalizer",
-            description=f"Actual: **{current.upper()}**\n\nSelecciona un preset:",
-            color=discord.Color.purple()
-        )
-        
-        for i, preset in enumerate(presets):
-            status = "✅" if preset == current else "⬜"
-            embed.add_field(name=f"{status} {preset}", value="Activo" if preset == current else "Inactivo", inline=True)
-        
-        embed.set_footer(text="Usa /equalizer [preset] para cambiar directamente")
-        
-        embed.set_footer(text="Usa /equalizer [preset] para cambiar directamente")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 # ============================================================
 # COMANDO PLAY
@@ -346,80 +521,50 @@ class MusicControls(View):
 @bot.tree.command(name="play", description="Reproduce una canción por nombre o enlace.")
 @app_commands.describe(query="Nombre de la canción o enlace")
 async def play(interaction: discord.Interaction, query: str):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ Usa este comando en un servidor.", ephemeral=True)
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
         return
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("🎧 Primero entra a un canal de voz.", ephemeral=True)
+
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("🎧 Entra primero a un canal de voz.", ephemeral=True)
         return
 
     await interaction.response.defer()
+
     player = get_player(interaction.guild.id)
-    channel = interaction.user.voice.channel
+
+    if player.voice and player.voice.is_connected():
+        if player.voice.channel != interaction.user.voice.channel:
+            await player.voice.move_to(interaction.user.voice.channel)
+    else:
+        player.voice = await interaction.user.voice.channel.connect()
 
     try:
-        if player.voice and player.voice.is_connected():
-            if player.voice.channel != channel:
-                await player.voice.move_to(channel)
-        else:
-            player.voice = await channel.connect()
-
         track = await extract_track(query)
-    except Exception as error:
-        print(f"Error buscando canción: {error}")
-        await interaction.followup.send("❌ No pude encontrar/reproducir esa canción. Comprueba el nombre o enlace.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error buscando la canción: {e}", ephemeral=True)
         return
 
-    was_playing = player.voice.is_playing() or player.voice.is_paused()
     player.queue.append(track)
 
-    if not was_playing and player.current is None:
+    if not player.voice.is_playing():
         await player.play_next()
-        msg = await interaction.followup.send(
-            embed=make_now_playing_embed(player),
-            view=MusicControls(player),
-            wait=True,
-        )
-        player.panel_message = msg
+        await interaction.followup.send(f"▶️ **{track.title}** - {track.uploader}")
     else:
-        await interaction.followup.send(
-            f"🎶 Añadida a la cola: **{track.title}** • posición **{len(player.queue)}**"
-        )
+        await interaction.followup.send(f"📝 **{track.title}** añadida a la cola ({len(player.queue)} en cola)")
 
 
 # ============================================================
-# COMANDOS RESTANTES
+# COMANDOS BÁSICOS
 # ============================================================
-@bot.tree.command(name="pause", description="Pausa la música.")
-async def pause(interaction: discord.Interaction):
-    player = get_player(interaction.guild.id)
-    if player.voice and player.voice.is_playing():
-        player.voice.pause()
-        await interaction.response.send_message("⏸️ Pausado.")
-        await update_panel(player)
-    else:
-        await interaction.response.send_message("❌ No hay música reproduciéndose.", ephemeral=True)
-
-
-@bot.tree.command(name="resume", description="Reanuda la música.")
-async def resume(interaction: discord.Interaction):
-    player = get_player(interaction.guild.id)
-    if player.voice and player.voice.is_paused():
-        player.voice.resume()
-        await interaction.response.send_message("▶️ Reanudado.")
-        await update_panel(player)
-    else:
-        await interaction.response.send_message("❌ La música no está pausada.", ephemeral=True)
-
-
 @bot.tree.command(name="skip", description="Salta la canción actual.")
 async def skip(interaction: discord.Interaction):
     player = get_player(interaction.guild.id)
-    if player.voice and player.voice.is_playing():
-        player.voice.stop()
-        await interaction.response.send_message("⏭️ Canción saltada.")
-    else:
+    if not player.voice or not player.voice.is_playing():
         await interaction.response.send_message("❌ No hay música reproduciéndose.", ephemeral=True)
+        return
+    player.voice.stop()
+    await interaction.response.send_message("⏭️ Canción saltada.")
 
 
 @bot.tree.command(name="stop", description="Detiene la música y limpia la cola.")
@@ -473,43 +618,23 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en un canal de voz.", ephemeral=True)
 
 
-@bot.tree.command(name="equalizer", description="Cambia el preset de equalizador.")
-@app_commands.describe(preset="Preset de equalizador (flat, bass, treble, boost, vocal)")
-async def equalizer(interaction: discord.Interaction, preset: str):
-    player = get_player(interaction.guild.id)
-    
-    if preset not in EQUALIZER_PRESETS:
-        presets = ", ".join(EQUALIZER_PRESETS.keys())
-        await interaction.response.send_message(f"❌ Preset inválido. Disponibles: {presets}", ephemeral=True)
-        return
-    
-    if not player.voice or not player.voice.is_connected():
-        await interaction.response.send_message("❌ No hay reproducción activa para aplicar equalizador.", ephemeral=True)
-        return
-    
-    # Guardar estado actual
-    was_playing = player.voice.is_playing()
-    current_track = player.current
-    
-    player.equalizer = preset
-    
-    # Reiniciar la reproducción con el nuevo equalizador
-    if current_track:
-        player.current = None
-        player.voice.stop()
-        
-        # Esperar un momento para que el proceso termine
-        await asyncio.sleep(1)
-        
-        # Volver a poner la canción al inicio de la cola
-        player.queue.insert(0, current_track)
-        
-        if player.queue:
-            await player.play_next()
-        
-        await interaction.response.send_message(f"🎚️ Equalizador cambiado a **{preset.upper()}** - reproducción reiniciada")
-    else:
-        await interaction.response.send_message(f"🎚️ Equalizador cambiado a **{preset.upper()}**")
+@bot.tree.command(name="musichelp", description="Muestra todos los comandos disponibles.")
+async def musichelp(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🎵 Comandos del Bot de Música",
+        description="Comandos slash disponibles:",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="/play [canción]", value="Reproduce una canción", inline=False)
+    embed.add_field(name="/skip", value="Salta la canción actual", inline=False)
+    embed.add_field(name="/stop", value="Detiene y limpia la cola", inline=False)
+    embed.add_field(name="/queue", value="Muestra la cola", inline=False)
+    embed.add_field(name="/nowplaying", value="Canción actual con panel", inline=False)
+    embed.add_field(name="/volume [0-100]", value="Cambia el volumen", inline=False)
+    embed.add_field(name="/leave", value="Desconecta del canal", inline=False)
+    embed.add_field(name="/musichelp", value="Muestra esta ayuda", inline=False)
+    embed.set_footer(text="Usa el botón 🎛️ en el panel para el ecualizador profesional")
+    await interaction.response.send_message(embed=embed)
 
 
 # ============================================================
@@ -517,39 +642,29 @@ async def equalizer(interaction: discord.Interaction, preset: str):
 # ============================================================
 @bot.event
 async def on_ready():
-    print("==========================================")
     print(f"✅ Bot conectado: {bot.user}")
     print(f"🌐 Servidores: {len(bot.guilds)}")
     print("==========================================")
     try:
         synced = await bot.tree.sync()
         print(f"✅ Slash commands sincronizados: {len(synced)}")
-    except Exception as error:
-        print(f"❌ Error sincronizando comandos: {error}")
-    if not panel_updater.is_running():
-        panel_updater.start()
-
+    except Exception as e:
+        print(f"❌ Error sincronizando comandos: {e}")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if bot.user and member.id == bot.user.id and before.channel and not after.channel:
-        player = music_players.get(member.guild.id)
-        if player:
-            player.voice = None
-            player.current = None
-            player.panel_message = None
+    if member.bot:
+        return
+    if before.channel and not after.channel:
+        player = get_player(before.channel.guild.id)
+        if player.voice and player.voice.channel == before.channel:
+            if len(player.voice.channel.members) == 1:
+                player.queue.clear()
+                player.current = None
+                if player.voice and player.voice.is_connected():
+                    await player.voice.disconnect()
+                    player.voice = None
 
 
-@tasks.loop(seconds=15)
-async def panel_updater():
-    for player in list(music_players.values()):
-        if player.current and player.panel_message:
-            await update_panel(player)
-
-
-@panel_updater.before_loop
-async def before_panel_updater():
-    await bot.wait_until_ready()
-
-
-bot.run(TOKEN)
+if __name__ == "__main__":
+    bot.run(TOKEN)
