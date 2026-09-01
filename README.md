@@ -1,42 +1,49 @@
-# JMusicBot Setup Guide
+# Discord Music Bot - Python
 
-## Paso 1: Descargar JMusicBot
-1. Ve a https://jmusicbot.com/
-2. Descarga la versión más reciente del JAR (normalmente algo como "JMusicBot-0.x.x.jar")
-3. Guarda el archivo JAR en esta carpeta
+## Características
+- Comandos slash (/play, /skip, /stop, /queue, /nowplaying, /pause, /resume, /volume)
+- Panel de control interactivo con botones
+- Sistema de cola por servidor
+- Soporte para nombres de canciones y links de YouTube
+- Embeds profesionales
+- Manejo de errores claro
 
-## Paso 2: Configurar en SparkedHost/Pterodactyl
+## Configuración en SparkedHost/Pterodactyl
 
 ### Archivos del servidor:
-1. Entra al panel de tu servidor en SparkedHost
-2. Ve a la sección "Archivos" o "Files"
-3. Sube el archivo JAR descargado (ej: JMusicBot-0.x.x.jar)
+1. Conecta el repositorio: `fh4xdzzz/BOT-MUSIC`
+2. Selección la rama: `master`
 
 ### Comando de inicio:
-- Configura el comando de inicio como: `java -jar JMusicBot-0.x.x.jar`
-- (Reemplaza JMusicBot-0.x.x.jar con el nombre exacto del archivo que descargaste)
+- Configura `${STARTUP_FILE}` = `main.py`
 
 ### Variables de entorno:
 En la sección de "Variables" configura:
-- `DISCORD BOT TOKEN` = tu token de Discord
-- `BOT OWNER ID` = tu ID de usuario de Discord (ej: 796931424112476171)
-- `BOT PREFIX` = @mention (o el prefijo que prefieras, como !)
+- `DISCORD_TOKEN` = tu token de Discord
 
-## Paso 3: Iniciar el servidor
-1. Guarda todos los cambios
-2. Inicia el servidor desde el panel
-3. El bot debería conectarse a Discord automáticamente
+## Comandos slash:
+- `/play [canción]` - Reproducir una canción
+- `/skip` - Saltar canción actual
+- `/stop` - Detener música y limpiar cola
+- `/queue` - Ver cola de reproducción
+- `/nowplaying` - Canción actual
+- `/pause` - Pausar música
+- `/resume` - Reanudar música
+- `/volume [1-100]` - Cambiar volumen
 
-## Comandos básicos de JMusicBot:
-- `@BotName play [canción]` - Reproducir una canción
-- `@BotName skip` - Saltar canción actual
-- `@BotName stop` - Detener música
-- `@BotName queue` - Ver cola
-- `@BotName np` - Canción actual
-- `@BotName volume [1-100]` - Cambiar volumen
+## Panel de control:
+El bot muestra un panel con botones al reproducir:
+- ⏸️/▶️ Pausar/Reanudar
+- ⏭️ Skip
+- ⏹️ Stop
+- 📜 Ver cola
 
-## Notas importantes:
-- JMusicBot usa Java, no Python
-- No requiere FFmpeg ni bibliotecas adicionales
-- Funciona perfectamente en la mayoría de hostings
-- Los archivos del repositorio anterior ya fueron eliminados
+## Requisitos:
+- Python 3.12+
+- FFmpeg (incluido en SparkedHost)
+- Bibliotecas de audio (incluidas en SparkedHost)
+
+## Notas:
+- Este bot usa Python y discord.py
+- Optimizado para funcionar en SparkedHost/Pterodactyl
+- Si hay problemas de audio, contacta al soporte del hosting
