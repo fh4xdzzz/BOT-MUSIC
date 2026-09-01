@@ -335,6 +335,8 @@ class MusicControls(View):
             embed.add_field(name=f"{status} {preset}", value="Activo" if preset == current else "Inactivo", inline=True)
         
         embed.set_footer(text="Usa /equalizer [preset] para cambiar directamente")
+        
+        embed.set_footer(text="Usa /equalizer [preset] para cambiar directamente")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
