@@ -595,21 +595,6 @@ async def nowplaying(interaction: discord.Interaction):
     await interaction.response.send_message(embed=make_now_playing_embed(player), view=MusicControls(player))
 
 
-@bot.tree.command(name="equalizer", description="Abre el ecualizador profesional de 10 bandas.")
-async def equalizer(interaction: discord.Interaction):
-    player = get_player(interaction.guild.id)
-    preset = EQ_NAMES.get(player.eq_preset, "Personalizado")
-    embed = discord.Embed(
-        title="🎚️ Ecualizador Profesional",
-        description=(
-            f"**Estado:** `{'ON' if player.eq_enabled else 'OFF'}` • **Perfil:** `{preset}`\n\n"
-            f"{eq_summary(player.eq_gains)}\n\n"
-            "Usa el menú para cambiar de preset o ajusta las **10 bandas** en dos grupos de 5, de **-12 a +12 dB** por banda."
-        ),
-    )
-    await interaction.response.send_message(embed=embed, view=EqualizerView(player), ephemeral=True)
-
-
 @bot.tree.command(name="volume", description="Cambia el volumen (0-100).")
 @app_commands.describe(level="Volumen entre 0 y 100")
 async def volume(interaction: discord.Interaction, level: app_commands.Range[int, 0, 100]):
@@ -633,7 +618,6 @@ async def leave(interaction: discord.Interaction):
         await interaction.response.send_message("❌ No estoy en un canal de voz.", ephemeral=True)
 
 
-<<<<<<< HEAD
 @bot.tree.command(name="musichelp", description="Muestra todos los comandos disponibles.")
 async def musichelp(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -653,8 +637,6 @@ async def musichelp(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-=======
->>>>>>> 676fb592f8565bd6ead36c3444923151815b2788
 # ============================================================
 # EVENTOS / ACTUALIZACIÓN
 # ============================================================
