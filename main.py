@@ -483,14 +483,30 @@ async def equalizer(interaction: discord.Interaction, preset: str):
         await interaction.response.send_message(f"❌ Preset inválido. Disponibles: {presets}", ephemeral=True)
         return
     
+    if not player.voice or not player.voice.is_connected():
+        await interaction.response.send_message("❌ No hay reproducción activa para aplicar equalizador.", ephemeral=True)
+        return
+    
+    # Guardar estado actual
+    was_playing = player.voice.is_playing()
+    current_track = player.current
+    
     player.equalizer = preset
     
-    # Si hay música reproduciéndose, cambiar equalizador requiere reiniciar la canción
-    if player.voice and player.voice.is_playing():
+    # Reiniciar la reproducción con el nuevo equalizador
+    if current_track:
         player.current = None
         player.voice.stop()
+        
+        # Esperar un momento para que el proceso termine
+        await asyncio.sleep(1)
+        
+        # Volver a poner la canción al inicio de la cola
+        player.queue.insert(0, current_track)
+        
         if player.queue:
             await player.play_next()
+        
         await interaction.response.send_message(f"🎚️ Equalizador cambiado a **{preset.upper()}** - reproducción reiniciada")
     else:
         await interaction.response.send_message(f"🎚️ Equalizador cambiado a **{preset.upper()}**")
