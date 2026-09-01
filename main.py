@@ -267,9 +267,23 @@ async def play(interaction: discord.Interaction, query: str):
     channel = interaction.user.voice.channel
 
     try:
+        # Si el bot está en otro canal y hay música reproduciéndose, avisar
         if player.voice and player.voice.is_connected():
             if player.voice.channel != channel:
-                await player.voice.move_to(channel)
+                if player.voice.is_playing() or player.current:
+                    await interaction.followup.send(
+                        f"⚠️ El bot está reproduciendo en otro canal ({player.voice.channel.name}). "
+                        f"Se moverá a tu canal ({channel.name}) - la música anterior se detendrá."
+                    )
+                    # Detener reproducción actual
+                    player.queue.clear()
+                    player.current = None
+                    if player.voice.is_playing():
+                        player.voice.stop()
+                    # Mover al nuevo canal
+                    await player.voice.move_to(channel)
+                else:
+                    await player.voice.move_to(channel)
         else:
             player.voice = await channel.connect()
 
